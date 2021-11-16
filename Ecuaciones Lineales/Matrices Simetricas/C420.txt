@@ -1,0 +1,1018 @@
+
+/*
+ * main.cpp
+ *
+ *  Created on: 16-abr-2009
+ *       
+ */
+
+#include "TBMatrix.h"
+#include "ItSel.h"
+#include "Archivo.h"
+#include "stdio.h"
+#include <iostream>
+using namespace std;
+
+
+/*---------------------------------------------------------*/
+
+int main(){
+	int kSOR;
+	char cadena[10];
+
+	/* creamos un vector con los valores de w optimo para cada tamaño de matriz */
+	float wOptimo[4] = {1.18, 1.25, 1.28, 1.31};
+
+	/* Generamos el archivo que enlista la cantidad de iteraciones en funcion de w */
+	Archivo archOmegaOptimo("OmegaOptimo.txt");
+	archOmegaOptimo.imprimir("w\tk\n");
+
+	for (int dim=6 ; dim<13 ; dim += 3){
+
+		/* creamos el vector solucion */
+		double* x = new double[dim];
+
+		/* lo cargamos con 1 */
+		for (int i=0 ; i<dim ; i++){
+			x[i] = 1;
+		}
+
+		/* creamos la matriz del apendice */
+		TBMatrix A(dim);
+
+		/* obtenemos el vector de terminos independientes */
+		double* b = multiplicarMatrizPorVector(A, x);
+
+		/* resolvemos el sistema con los distintos metodos */
+		delete[] x;
+		x = jacobi(A, b);
+		delete[] x;
+		x = gaussSeidel(A, b);
+		delete[] x;
+
+		/* escribimos el archivo OmegaOptimo */
+		sprintf(cadena, "A%d\n", dim);
+		archOmegaOptimo.imprimir(cadena);
+		for (double w=1 ; w<2 ; w += 0.05){
+			x = SOR(A, b, w, kSOR);
+			sprintf(cadena,"%f\t%d\n", w, kSOR);
+			archOmegaOptimo.imprimir(cadena);
+			delete[] x;
+		}
+		/*-------------------------------------*/
+
+		/* finalmente pisamos el archivo correspondiente de SORn.txt con el valor de w optimo */
+		x = SOR(A, b, wOptimo[(dim/3)-2], kSOR);
+		delete[] x;
+		delete[] b;
+		/*-------------------------------------------------*/
+	}
+
+	/* creamos el vector solucion */
+	double* x = new double[30];
+
+	/* lo cargamos con 1 */
+	for (int i=0 ; i<30 ; i++){
+		x[i] = 1;
+	}
+
+	/* creamos la matriz del apendice */
+	TBMatrix A(30);
+
+	/* obtenemos el vector de terminos independientes */
+	double* b = multiplicarMatrizPorVector(A, x);
+
+	/* resolvemos el sistema con los distintos metodos */
+
+	delete[] x;
+	x = jacobi(A, b);
+	delete[] x;
+	x = gaussSeidel(A, b);
+	delete[] x;
+
+	archOmegaOptimo.imprimir("A30\n");
+	for (double w=1 ; w<2 ; w += 0.05){
+		x = SOR(A, b, w, kSOR);
+		char cadena[10];
+		sprintf(cadena,"%f\t%d\n", w, kSOR);
+		archOmegaOptimo.imprimir(cadena);
+		delete[] x;
+	}
+
+	/* finalmente pisamos el archivo correspondiente de SORn.txt con el valor de w optimo */
+	x = SOR(A, b, wOptimo[3], kSOR);
+	delete[] x;
+	delete[] b;
+
+	return 0;
+}
+/*
+ * ItSEL.cpp
+ *
+ *  Created on: 17-abr-2009
+ *       
+ */
+#include "TBMatrix.h"
+#include "ItSel.h"
+#include "math.h"
+#include "archivo.h"
+#include <string>
+#include <iostream>
+#include "stdio.h"
+using namespace std;
+
+/*------------------------------------------------------------------------------*/
+void mostrarMatriz(const TBMatrix & matriz){
+	int i,j;
+	int n = matriz.dim();
+	for(i=0;i<n;i++){
+		for (j=0;j<n;j++){
+			cout << matriz.get(i,j) << " ";
+		}
+		cout << '\n';
+	}
+}
+
+/*-----------------------------------------------------------------------------*/
+
+int criterioConvergencia( double actual[] , double anterior[] , int n , double tol, double & R){
+    int i;
+    double numerador = 0.00;
+    double denominador = 0.00;
+    for ( i=0 ; i<n ; i++ ){
+        if ( fabs(actual[i]-anterior[i]) > numerador )
+            numerador = fabs(actual[i]-anterior[i]) ;
+        if ( fabs(actual[i]) > denominador )
+            denominador = fabs(actual[i]);
+    }
+    if ( denominador==0.00 ) return 1;    /* División por cero  */
+    else{
+		R = numerador /denominador;
+		if ( R <= tol ) return 1;
+		else return 0;
+    }
+
+}
+
+/*-----------------------------------------------------------------------------*/
+
+int imprimirVector( double vec[] , int longitud){
+    int i;
+    for ( i=0 ; i<longitud ; i++ ){
+        cout << vec[i] << " ";
+    }
+    return 0;
+}
+/*-----------------------------------------------------------------------------*/
+
+int copiarVector( double destino[] , double origen[] , int longitud ){
+    int i;
+    for ( i=0 ; i<longitud ; i++ ){
+        destino[i] = origen[i];
+    }
+    return 0;
+}
+
+/*-----------------------------------------------------------------------------*/
+
+
+double* multiplicarMatrizPorVector(const TBMatrix & A, double* x){
+	int i, j;
+	int n = A.dim();
+	double sum;
+	double* b = new double[n];
+
+	for (i=0 ; i<n ; i++){
+		sum = 0;
+		for(j=0 ; j<n ; j++){
+			sum += A.get(i,j) * x[j];
+		}
+		b[i] = sum;
+	}
+	return b;
+}
+
+/*--------------------------------------------------------------------------------------------*/
+
+double* jacobi(const TBMatrix & A, double* b){
+
+	int k = 1;              /* Número de iteración */
+	int i,j;                /* subindices para filas y columnas */
+	double sum = 0;  		/* variable auxiliar para la sumatoria */
+	int converge = 0;      	/* me indica el criterio de corte, inicialmente en Falso==0 */
+	double rActual, rAnterior, radioEspectral; /* los valores de R^k , R^k-1 y radio espectral*/
+
+	int n = A.dim();
+
+	/* Creamos el archivo donde guardar los datos */
+	char nombreArchivo[20];
+	sprintf(nombreArchivo,"Jacobi%d.txt",n);
+	Archivo archivo(nombreArchivo);
+	/*--------------------------------------------*/
+
+    double* xkm = new double[n]; //xkm: x^k+1
+    double* xk = new double[n];  //xk: x^k
+
+    /* En la primer iteración xkm y xk seran el nulo */
+    for (i=0 ; i<n ; i++){
+    	xkm[i] = 0;
+    	xk[i] = 0;
+    }
+
+    /* Preparamos el encabezado de la tabla en el archivo */
+    archivo.imprimir("b = ");
+    char cadena[15];
+    for (i=0 ; i<n ; i++){
+    	sprintf(cadena,"%f\t", b[i]);
+    	archivo.imprimir(cadena);
+    }
+    archivo.imprimir("\n\n");
+    archivo.imprimir("k\tR^k\t\tRadio Espectral\t");
+    for (i=0 ; i<n ; i++){
+    	sprintf(cadena,"x[%d]\t\t",i+1);
+    	archivo.imprimir(cadena);
+    }
+    archivo.imprimir("\n");
+
+    /*----------------------------------------------------*/
+
+    //cout << "Comienzo Jacobi" << '\n';
+
+    while (!converge){
+
+    	/* separamos los casos anticipandonos a lo que sería el metodo de GS */
+
+    	for ( i=0 ; i<n ; i++ ){
+    		sum = 0;
+    		for (j=(i<3)?(0):(i-3) ; j<i ; j++ ){ /* suma de los elementos a la izq de la diagonal */
+            	if (  ( j==i-1 ) || ( j==i-3 ) ){  /* Condición para las matrices tridiagonales. Para cualquier matriz la condicion es " j!=i " */
+                	sum += ((A.get(i,j)) * (xk[j]));        /* Hago la sumatoria */
+            	}
+        	}
+    		for (j=i+1 ; j<((i<n-3)?(i+4):(n)) ; j++){ /* suma de los elementos a la derecha de la diagonal */
+    			if (( j==i+1 ) || ( j==i+3 )){
+    				sum += ((A.get(i,j)) * (xk[j]));
+    			}
+    		}
+        	xkm[i] = ( b[i] - sum ) / A.get(i,i);
+    	}
+
+    	converge = criterioConvergencia(xkm, xk, n, RTOL, rActual);
+    	if ((k>1) and (rAnterior != 0)){
+			radioEspectral = rActual / rAnterior;
+    	}else{
+    		radioEspectral = 0;
+    	}
+    	/* Grabamos los datos de esta iteracion en el archivo */
+    	char cadena[20];
+    	sprintf(cadena,"%d\t%f\t%f\t", k, rActual, radioEspectral);
+    	archivo.imprimir(cadena);
+    	for (i=0 ; i<n ; i++){
+    		sprintf(cadena,"%f\t", xkm[i]);
+    		archivo.imprimir(cadena);
+    	}
+    	archivo.imprimir("\n");
+
+    	/*----------------------------------------------------*/
+
+    	rAnterior = rActual;
+
+    	copiarVector (xk,xkm,n);
+    	k++;
+    }
+
+    cout << "Jacobi" << endl;
+    imprimirVector(xkm,n);
+    //cout << "Fin Jacobi" << '\n';
+    cout << "k = " << k << endl;
+    cout << "radio espectral: " << radioEspectral << endl;
+    delete[] xk;
+
+
+    return xkm;
+}
+
+/*--------------------------------------------------------------------------------------------*/
+
+double* gaussSeidel(const TBMatrix & A, double* b){
+
+	int k = 1;              /* Número de iteración */
+	int i,j;                /* subindices para filas y columnas */
+	double sum = 0;  		/* variable auxiliar para la sumatoria */
+	int converge = 0;     	/* me indica el criterio de corte, inicialmente en Falso==0 */
+	double rActual, rAnterior, radioEspectral; /* los valores de R^k , R^k-1 y radio espectral*/
+
+	int n = A.dim();
+
+	/* Creamos el archivo donde guardar los datos */
+	char nombreArchivo[20];
+	sprintf(nombreArchivo,"Gauss Seidel%d.txt",n);
+	Archivo archivo(nombreArchivo);
+	/*--------------------------------------------*/
+
+    double* xkm = new double[n]; //xkm: x^k+1
+    double* xk = new double[n];  //xk: x^k
+
+    /* En la primer iteración xkm y xk seran el nulo */
+    for (i=0 ; i<n ; i++){
+    	xkm[i] = 0;
+    	xk[i] = 0;
+    }
+
+    /* Preparamos el encabezado de la tabla en el archivo */
+    archivo.imprimir("b = ");
+    char cadena[15];
+    for (i=0 ; i<n ; i++){
+    	sprintf(cadena,"%f\t", b[i]);
+    	archivo.imprimir(cadena);
+    }
+    archivo.imprimir("\n\n");
+    archivo.imprimir("k\tR^k\t\tRadio Espectral\t");
+    for (i=0 ; i<n ; i++){
+    	sprintf(cadena,"x[%d]\t\t",i+1);
+    	archivo.imprimir(cadena);
+    }
+    archivo.imprimir("\n");
+
+    /*----------------------------------------------------*/
+
+    //cout << "Comienzo Gauss Seidel" << '\n';
+
+    while (!converge){
+
+    	for ( i=0 ; i<n ; i++ ){
+    		sum = 0;
+    		for (j=(i<3)?(0):(i-3) ; j<i ; j++ ){ /* suma de los elementos a la izq de la diagonal */
+            	if (  ( j==i-1 ) || ( j==i-3 ) ){  /* Condición para las matrices tridiagonales. Para cualquier matriz la condicion es " j!=i " */
+                	sum += ((A.get(i,j)) * (xkm[j]));        /* Hago la sumatoria */
+            	}
+        	}
+    		for (j=i+1 ; j<((i<n-3)?(i+4):(n)) ; j++){ /* suma de los elementos a la derecha de la diagonal */
+    			if (( j==i+1 ) || ( j==i+3 )){
+    				sum += ((A.get(i,j)) * (xk[j]));
+    			}
+    		}
+        	xkm[i] = ( b[i] - sum ) / A.get(i,i);
+    	}
+
+
+    	converge = criterioConvergencia(xkm, xk, n, RTOL, rActual);
+    	if ((k>1) and (rAnterior != 0)){
+    		radioEspectral = rActual / rAnterior;
+    	}else{
+    		radioEspectral = 0;
+    	}
+
+    	/* Grabamos los datos de esta iteracion en el archivo */
+    	char cadena[20];
+    	sprintf(cadena,"%d\t%f\t%f\t", k, rActual, radioEspectral);
+    	archivo.imprimir(cadena);
+    	for (i=0 ; i<n ; i++){
+    		sprintf(cadena,"%f\t", xkm[i]);
+    		archivo.imprimir(cadena);
+    	}
+    	archivo.imprimir("\n");
+
+    	/*----------------------------------------------------*/
+
+    	rAnterior = rActual;
+    	copiarVector (xk,xkm,n);
+    	k++;
+    }
+
+    cout << "Gauss Seidel" << endl;
+    imprimirVector(xkm,n);
+    //cout << "Fin Gauss Seidel" << '\n';
+    cout << "k = " << k << endl;
+    cout << "radio espectral: " << radioEspectral << endl;
+    delete[] xk;
+
+
+    return xkm;
+}
+
+/*--------------------------------------------------------------------------------------------*/
+
+double* SOR(const TBMatrix & A, double* b, double w, int & k){
+
+	k = 1;              /* Número de iteración */
+	int i,j;                /* subindices para filas y columnas */
+	double sum = 0;  		/* variable auxiliar para la sumatoria */
+	int converge = 0;      	/* me indica el criterio de corte, inicialmente en Falso==0 */
+	double rActual, rAnterior, radioEspectral; /* los valores de R^k , R^k-1 y radio espectral*/
+
+	int n = A.dim();
+
+	/* Creamos el archivo donde guardar los datos */
+	char nombreArchivo[20];
+	sprintf(nombreArchivo,"SOR%d.txt",n);
+	Archivo archivo(nombreArchivo);
+	/*--------------------------------------------*/
+
+    double* xkm = new double[n]; //xkm: x^k+1
+    double* xk = new double[n];  //xk: x^k
+
+    /* En la primer iteración xkm y xk seran el nulo */
+    for (i=0 ; i<n ; i++){
+    	xkm[i] = 0;
+    	xk[i] = 0;
+    }
+
+    /* Preparamos el encabezado de la tabla en el archivo */
+    archivo.imprimir("b = ");
+    char cadena[15];
+    for (i=0 ; i<n ; i++){
+    	sprintf(cadena,"%f\t", b[i]);
+    	archivo.imprimir(cadena);
+    }
+    archivo.imprimir("\n\n");
+    archivo.imprimir("k\tR^k\t\tRadio Espectral\t");
+    for (i=0 ; i<n ; i++){
+    	sprintf(cadena,"x[%d]\t\t",i+1);
+    	archivo.imprimir(cadena);
+    }
+    archivo.imprimir("\n");
+
+    /*----------------------------------------------------*/
+
+    //cout << "Comienzo SOR" << '\n';
+
+    while (!converge){
+
+    	for ( i=0 ; i<n ; i++ ){
+    		sum = 0;
+    		for (j=(i<3)?(0):(i-3) ; j<i ; j++ ){ /* suma de los elementos a la izq de la diagonal */
+            	if (  ( j==i-1 ) || ( j==i-3 ) ){  /* Condición para las matrices tridiagonales. Para cualquier matriz la condicion es " j!=i " */
+                	sum += ((A.get(i,j)) * (xkm[j]));        /* Hago la sumatoria */
+            	}
+        	}
+    		for (j=i+1 ; j<((i<n-3)?(i+4):(n)) ; j++){ /* suma de los elementos a la derecha de la diagonal */
+    			if (( j==i+1 ) || ( j==i+3 )){
+    				sum += ((A.get(i,j)) * (xk[j]));
+    			}
+    		}
+        	xkm[i] = ( b[i] - sum ) / A.get(i,i);
+
+        	/* aplico el w */
+        	xkm[i] = ((xkm[i] - xk[i]) * w) + xk[i];
+    	}
+
+    	converge = criterioConvergencia(xkm, xk, n, RTOL, rActual);
+    	if ((k>1) and (rAnterior != 0)){
+    		radioEspectral = rActual / rAnterior;
+    	}else{
+    		radioEspectral = 0;
+    	}
+
+    	/* Grabamos los datos de esta iteracion en el archivo */
+    	char cadena[20];
+    	sprintf(cadena,"%d\t%f\t%f\t", k, rActual, radioEspectral);
+    	archivo.imprimir(cadena);
+    	for (i=0 ; i<n ; i++){
+    		sprintf(cadena,"%f\t", xkm[i]);
+    		archivo.imprimir(cadena);
+    	}
+    	archivo.imprimir("\n");
+
+    	/*----------------------------------------------------*/
+
+    	rAnterior = rActual;
+    	copiarVector (xk,xkm,n);
+    	k++;
+    }
+
+    cout << "SOR" << endl;
+    imprimirVector(xkm,n);
+    //cout << "Fin SOR" << '\n';
+    cout << "k = " << k << endl;
+    cout << "radio espectral: " << radioEspectral << endl;
+    delete[] xk;
+
+    k = k-1;
+    return xkm;
+}
+
+/*
+ * TBMatrix.cpp
+ *
+ *  Created on: 16-abr-2009
+ *       
+ */
+
+#include "TBMatrix.h"
+
+
+/*--------------------------------------------------------------------------*/
+
+TBMatrix::TBMatrix(int n){
+
+	this->n = n;
+	this->setD1();
+	this->setD2();
+	this->setD3();
+}
+
+/*--------------------------------------------------------------------------*/
+
+TBMatrix::TBMatrix(double* d1, double* d2, double* d3, int n){
+
+	this->n = n;
+	this->setD1(d1);
+	this->setD2(d2);
+	this->setD3(d3);
+}
+
+/*--------------------------------------------------------------------------*/
+
+TBMatrix::~TBMatrix(){
+	delete[] this->d1;
+	delete[] this->d2;
+	delete[] this->d3;
+}
+
+/*--------------------------------------------------------------------------*/
+
+double TBMatrix::get(int fil, int col) const{
+
+	double resultado = 0;
+	int n = this->n;
+
+	/* verifico que los indices sean validos */
+
+	if ((fil<n) and (fil>=0) and (col<n) and (col>=0)){
+
+		/* identifico en que diagonal tengo que buscar */
+
+		switch (col-fil){
+
+		case 0: //debo buscar en d1
+
+			/* en este caso el numero de fila o de columna coincide con
+			 * la posicione en la diagonal
+			 */
+			resultado = this->d1[fil];
+			break;
+
+		case 1: // debo buscar en d2 pensando en la parte superior
+
+			/* en este caso el numero de fila corresponde con la posicion
+			 * en la diagonal
+			 */
+			resultado = this->d2[fil];
+			break;
+
+
+		case -1: //debo buscar en d2 pensando en la parte inferior
+
+			/* en este caso el numero de columna corresponde con la posicion
+			 * en la diagonal
+			 */
+			resultado = this->d2[col];
+			break;
+
+		case 3: //debo buscar en d3 pensando en la parte superior
+
+			/* en este caso el numero de fila corresponde con la posicion
+			 * en la diagonal
+			 */
+			resultado = this->d3[fil];
+			break;
+
+		case -3: //debo buscar en d3 pensando en la parte inferior
+
+			/* en este caso el numero de columna corresponde con la posicion
+			 * en la diagonal
+			 */
+			resultado = this->d3[col];
+			break;
+
+		default: /*debo devolver un 0 porque el indice no corresponde
+			      * a ninguna diagonal no nula */
+			resultado = 0;
+			break;
+
+		}
+
+	}
+	return resultado;
+}
+
+/*--------------------------------------------------------------------------*/
+
+int TBMatrix::dim() const{
+	return this->n;
+}
+
+/*--------------------------------------------------------------------------*/
+
+void TBMatrix::setD1(){
+	int i;
+	int n = this->n;
+
+	this->d1 = new double[n];
+
+	/* completo la diagonal hasta donde termina B1 */
+	for (i = 0; (i<3) and (i<n); i++ ){
+		this->d1[i]=2;
+	}
+	/* completo la diagonal hasta donde empieza B3 */
+	for (i = 3; (i<n-3); i++ ){
+		this->d1[i]=4;
+	}
+	/* completo la diagonal segun B3 en la parte que queda */
+	for (i = n-3; i<n; i++ ){
+		this->d1[i]=3;
+	}
+
+}
+
+/*---------------------------------------------------------------------------*/
+
+void TBMatrix::setD2(){
+	int i;
+	int n = this->n;
+
+	this->d2 = new double[n-1];
+
+	/* completo la diagonal hasta donde termina B1 */
+	for (i = 0; (i<2) and (i<n-1); i++ ){
+		this->d2[i]= -0.5;
+	}
+	/* completo la diagonal hasta donde empieza B3 */
+	for (i = 3; (i<n-4); i++ ){
+		this->d2[i]= -1;
+	}
+	/* completo la diagonal segun B3 en la parte que queda */
+	for (i = n-3; i<n-1; i++ ){
+		this->d2[i]= -0.5;
+	}
+
+	/* agrego los 0 que me estan faltando en la diagonal */
+	for (i = 2; i<n-1;i= i + 3){
+		this->d2[i]=0;
+	}
+
+}
+
+/*---------------------------------------------------------------------------*/
+
+void TBMatrix::setD3(){
+	int i;
+	int n = this->n;
+
+	this->d3 = new double[n-3];
+
+	/* Esta es facil porque son todos -1 */
+
+	for (i=0 ; i<n-3 ; i++){
+		this->d3[i]=-1;
+	}
+
+}
+
+/*---------------------------------------------------------------------------*/
+
+void TBMatrix::setD1(double* diag){
+	int i;
+	int n = this->n;
+
+	this->d1 = new double[n];
+
+	/* copio los elementos de la diagonal pasada por parametro a la propia de
+	 * la instancia
+	 */
+	for (i=0 ; i<n ; i++){
+		this->d1[i] = diag[i];
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+
+void TBMatrix::setD2(double* diag){
+	int i;
+	int n = this->n;
+
+	this->d2 = new double[n-1];
+
+	/* copio los elementos de la diagonal pasada por parametro a la propia de
+	 * la instancia
+	 */
+	for (i=0 ; i<n-1 ; i++){
+		this->d2[i] = diag[i];
+	}
+}
+
+/*--------------------------------------------------------------------------*/
+
+void TBMatrix::setD3(double* diag){
+	int i;
+	int n = this->n;
+
+	this->d3 = new double[n];
+
+	/* copio los elementos de la diagonal pasada por parametro a la propia de
+	 * la instancia
+	 */
+	for (i=0 ; i<n-3 ; i++){
+		this->d3[i] = diag[i];
+	}
+}
+
+/*
+ * Archivo.cpp
+ *
+ *  Created on: 18-abr-2009
+ *       
+ */
+
+#include "Archivo.h"
+
+/*--------------------------------------------------------------------------*/
+
+Archivo::Archivo(){
+    this->setNombre("salida.txt");
+}
+
+Archivo::Archivo(char* nombre){
+    this->setNombre(nombre);
+}
+
+Archivo::~Archivo(){
+	if (this->archivo){
+		this->cerrar();
+	}
+}
+
+void Archivo::setNombre(char* nombre){
+    //this->nombre= new char[20];
+    this->nombre=nombre;
+    this->abrir();
+}
+
+void Archivo::abrir(){
+    this->archivo = fopen( (this->nombre) , "w" );
+    if( this->archivo )
+      cout << endl << "Archivo creado." << endl;
+    else{
+      cout << endl << "Error Archivo NO CREADO." << endl;
+   }
+}
+
+void Archivo::imprimir(char* c){
+    fprintf( this->archivo , c );
+}
+
+void Archivo::cerrar(){
+   if( !fclose( this->archivo ) ){
+      cout << endl << "Archivo guardado." << endl;
+   }else{
+      cout << "Error: Archivo NO CERRADO." << endl;
+    }
+
+}
+
+/*
+ * ItSel.h
+ *
+ *  Created on: 17-abr-2009
+ *       
+ */
+
+#ifndef ITSEL_H_
+#define ITSEL_H_
+
+#define RTOL 0.001
+
+
+/*------------------------------------------------------------------------------*/
+/*
+ * pre:
+ * post: imprime la matriz por consola
+ */
+void mostrarMatriz(const TBMatrix & matriz);
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: n debe ser la dimension de actual y anterior, tol es la precisión relativa.
+ * post: devuelve 1 si se cumple el criterio de convergencia R^k <= RTOL
+ */
+int criterioConvergencia( double actual[] , double anterior[] , int n , double tol );
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: longitud debe ser la dimension de vec
+ * post: imprime los elementos de vec por consola
+ */
+int imprimirVector( double vec[] , int longitud);
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: longitud debe ser la dimension de destino y de origen
+ * post: copia el contenido de origen sobre destino
+ */
+int copiarVector( double destino[] , double origen[] , int longitud );
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: x debe tener la misma dimension que A
+ * post: devuelve el resultado de multiplicar el vector x por la matriz A
+ */
+double* multiplicarMatrizPorVector(const TBMatrix & A, double* x);
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: b debe tener la misma dimension que A
+ * post: resuelve el sistema Ax = b con el metodo de Jacobi
+ */
+double* jacobi(const TBMatrix & A, double* b);
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: b debe tener la misma dimension que A
+ * post: resuelve el sistema Ax = b con el metodo de Gauss Seidel
+ */
+double* gaussSeidel(const TBMatrix & A, double* b);
+/*------------------------------------------------------------------------------*/
+/*
+ * pre: b debe tener la misma dimension que A
+ * post: resuelve el sistema Ax = b con el metodo de SOR
+ */
+double* SOR(const TBMatrix & A, double* b, double w, int & k);
+/*------------------------------------------------------------------------------*/
+
+#endif
+/* ITSEL_H_ */
+/*
+ * TBMatrix.h
+ *
+ *  Created on: 16-abr-2009
+ *       
+ */
+
+#ifndef TBMATRIX_H_
+#define TBMATRIX_H_
+
+/*
+ * El objetivo de la clase es modelar una matriz tridiagonal en bloques simetrica
+ */
+
+class TBMatrix{
+
+public:
+
+	/*
+	 * pre: n puede valer 6,9,12,30
+	 * post: inicializa la matriz de dimension n con los valores por defecto
+	 */
+	TBMatrix(int n);
+
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre: n pude valer 6,9,12,30. d1 debe apuntar a un arreglo de dimension n.
+	 * d2 debe apuntar a un arreglo de dimension n-1 y d3 debe apuntar a un
+	 * arreglo de dimensión n-3
+	 * post: inicializa la matriz de dimensión n con las diagonales dadas
+	 * por d1, d2 y d3
+	 */
+	TBMatrix(double* d1, double* d2, double* d3, int n);
+
+	/*--------------------------------------------------------------------*/
+	/*
+	 * pre:
+	 * post: libera los recursos asociados a la instancia
+	 */
+	~TBMatrix();
+
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre: 0<=fil<n   y   0<=col<n
+	 * post: devuelve el valor contenido en la posición fil, col de la matriz
+	 */
+	double get(int fil, int col) const;
+
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre:
+	 * post: devuelve la dimension de la matriz
+	 */
+	int dim() const;
+
+	/*--------------------------------------------------------------------*/
+
+private:
+
+	/*
+	 * diagonales no nulas de la matriz
+	 */
+	double* d1;
+	double* d2;
+	double* d3;
+
+	/* dimension de la matriz */
+	int n;
+
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre: diag debe apuntar a un arreglo de dimension n
+	 * post: establece los elementos de la diagonal d1 identicos a los pasados
+	 * por parametro
+	 */
+	void setD1(double* diag);
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre:
+	 * post: establece los elementos de la diagonal d1 por defecto
+	 */
+	void setD1();
+
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre: diag debe apuntar a un arreglo de dimension n-1
+	 * post: establece los elementos de la diagonal d2 identicos a los pasados
+	 * por parametro
+	 */
+	void setD2(double* diag);
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre:
+	 * post: establece los elementos de la diagonal d2 por defecto
+	 */
+	void setD2();
+
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre: diag debe apuntar a un arreglo de dimension n-3
+	 * post: establece los elementos de la diagonal d3 identicos a los pasados
+	 * por parametro
+	 */
+	void setD3(double* diag);
+	/*--------------------------------------------------------------------*/
+
+	/*
+	 * pre: n pude valer 6,9,12,30.
+	 * post: establece los elementos de la diagonal d3 por defecto
+	 */
+	void setD3();
+
+	/*--------------------------------------------------------------------*/
+
+
+};
+
+#endif /* TBMATRIX_H_ */
+
+/*
+ * Archivo.h
+ *
+ *  Created on: 18-abr-2009
+ *       
+ */
+
+#ifndef ARCHIVO_H_INCLUDED
+#define ARCHIVO_H_INCLUDED
+
+#include <stdio.h>
+#include <iostream>
+using namespace std;
+
+/*
+* Clase que representa la salida de texto en un archivo
+*/
+
+
+class Archivo{
+
+public:
+
+	Archivo(); /* >>>> Usar este constructor */
+
+	Archivo(char* nombre);
+
+	void imprimir(char* c);
+
+	void cerrar();
+
+	~Archivo();
+
+	/*--------------------------------------------------------------------*/
+
+private:
+
+    /*
+	 * Representa al archivo de texto
+	 */
+    FILE *archivo;
+
+    char* nombre;
+
+	void setNombre(char* nombre);
+
+	void abrir();
+
+
+};
+
+#endif // ARCHIVO_H_INCLUDED
+
